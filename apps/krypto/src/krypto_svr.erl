@@ -4,10 +4,13 @@
 %% API.
 -export([start_link/0]).
 -export([gen_keys/0]).
+-export([gen_keys/1]).
 -export([sign/2]).
 -export([verify/3]).
 -export([parse_address/1]).
 -export([gen_address/1]).
+-export([from_wif/1]).
+-export([to_wif/1]).
 
 %% gen_server.
 -export([init/1]).
@@ -33,6 +36,9 @@ start_link() ->
 gen_keys() ->
   gen_server:call(?SERVER, {gen_keys}).
 
+gen_keys(PrivKey) ->
+  gen_server:call(?SERVER, {gen_keys, PrivKey}).
+
 sign(Message, Key) ->
   gen_server:call(?SERVER, {sign, Message, Key}).
 
@@ -45,6 +51,12 @@ parse_address(Addr) ->
 gen_address(Addr) ->
   gen_server:call(?SERVER, {gen_address, Addr}).
 
+to_wif(PrivKey) ->
+  gen_server:call(?SERVER, {to_wif, PrivKey}).
+
+from_wif(WIF) ->
+  gen_server:call(?SERVER, {from_wif, WIF}).
+
 %% gen_server.
 
 init([]) ->
@@ -52,6 +64,13 @@ init([]) ->
 
 handle_call({gen_keys}, _From, State) ->
   {Pub, Priv} = crypto:generate_key(ecdh, ?CURVE_SPEC),
+  Pub58 = to_base58(Pub),
+  Priv58 = to_base58(Priv),
+  {reply, {ok, [{pub, Pub58}, {priv, Priv58}]}, State};
+
+handle_call({gen_keys, PrivKey}, _From, State) ->
+  Key = from_base58(PrivKey),
+  {Pub, Priv} = crypto:generate_key(ecdh, ?CURVE_SPEC, Key),
   Pub58 = to_base58(Pub),
   Priv58 = to_base58(Priv),
   {reply, {ok, [{pub, Pub58}, {priv, Priv58}]}, State};
@@ -79,6 +98,7 @@ handle_call({parse_address, Pub}, _From, State) ->
 handle_call({gen_address, Pub}, _From, State) ->
   Bin = from_base58(Pub),
   B1 = crypto:hash(ripemd160, crypto:hash(sha256, Bin)),
+
   %% add 0x00 for main network
   B2 = <<0, B1/binary>>,
 
@@ -86,8 +106,19 @@ handle_call({gen_address, Pub}, _From, State) ->
   %  double hash it, and take the checksum
   <<Chk:4/bytes, _/binary>> = crypto:hash(sha256, crypto:hash(sha256, B2)),
   B3 = <<B2/binary, Chk/binary>>,
-
   {reply, {ok, to_base58(B3)}, State};
+
+handle_call({to_wif, PrivKey}, _From, State) ->
+  Bin = from_base58(PrivKey),
+  %% 0x80 - main net, 0xef - testnet
+  B1 = <<80, Bin/binary>>,
+  <<Chk:4/bytes, _/binary>> = crypto:hash(sha256, crypto:hash(sha256, B1)),
+  B2 = <<B1/binary, Chk/binary>>,
+  {reply, {ok, to_base58(B2)}, State};
+
+handle_call({from_wif, WIF}, _From, State) ->
+  <<80, Key:32/bytes, _/binary>> = from_base58(WIF),
+  {reply, {ok, to_base58(Key)}, State};
 
 handle_call(_Request, _From, State) ->
   {reply, ignored, State}.
@@ -109,7 +140,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% ============================================================================
 %%
 to_base58(Bin) -> list_to_binary(base58:binary_to_base58(Bin)).
-from_base58(Base58) -> base58:base58_from_binary(binary_to_list(Base58)).
+from_base58(Base58) -> base58:base58_to_binary(binary_to_list(Base58)).
 
 
 -ifdef(TEST).
