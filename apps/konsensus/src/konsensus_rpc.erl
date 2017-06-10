@@ -9,7 +9,11 @@ send(NodeId, #request_vote{candidate_id=From}=Msg) ->
               Reply when is_record(Reply, vote) ->
                 konsensus_fsm:send(From, Reply);
               Error ->
-                ?ERROR("Unable to send vote: ~p~n", [Error])
+                ?ERROR("Unable to send vote: ~p", [Error])
             end
-        end).
+        end);
 
+send(NodeId, Msg) ->
+  spawn(fun() ->
+            konsensus_fsm:send(NodeId, Msg)
+        end).
