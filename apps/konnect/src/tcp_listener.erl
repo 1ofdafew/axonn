@@ -20,7 +20,6 @@
 
 %% API.
 
--spec start_link() -> {ok, pid()}.
 start_link(Port, Module) ->
 	gen_server:start_link(?MODULE, [Port, Module], []).
 
