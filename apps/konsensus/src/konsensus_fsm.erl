@@ -14,6 +14,7 @@
 -export([get_leader/1]).
 -export([join/2]).
 -export([active_members/2]).
+-export([new_elected_leader/2]).
 
 %% gen_fsm.
 -export([init/1]).
@@ -72,6 +73,9 @@ join(Leader, Node) ->
 
 active_members(Node, ActiveMembers) ->
   gen_fsm:send_event(fsm_name(Node), {members, ActiveMembers}).
+
+new_elected_leader(Node, Leader) ->
+  gen_fsm:send_event(fsm_name(Node), {leader, Leader}).
 
 %% ============================================================================
 %% gen_fsm.
@@ -177,6 +181,11 @@ follower({members, ActiveMembers}, #state{self=Id, members=Members} = State) ->
   Updated = ActiveMembers -- [Id],
   {next_state, follower, State#state{members=Updated}};
 
+follower({leader, Leader}, #state{self=Id, members=Members} = State) ->
+  ?INFO("~p :F: updating active members after election. New leader: ~p", [Id, Leader]),
+  Updated = Members -- [Leader],
+  {next_state, follower, State#state{members=Updated}};
+
 follower(Event, #state{self=Id} = State) ->
   unexpected(Event, follower, Id),
   {next_state, follower, State}.
@@ -203,8 +212,8 @@ candidate(Event, #state{self=Id} = State) ->
   {next_state, candidate, State}.
 
 leader(timeout_heartbeat, State) ->
-  NewTimer = send_heartbeat(State),
-  {next_state, leader, State#state{timer=NewTimer}};
+  NewState = send_heartbeat(State),
+  {next_state, leader, NewState};
 
 leader(Event, #state{self=Id} = State) ->
   unexpected(Event, leader, Id),
@@ -288,16 +297,19 @@ election_timeout() ->
 heartbeat_timeout() ->
   crypto:rand_uniform(3000, 5000).
 
-assert_leadership(#state{self=Id} = State) ->
-  NewTimer = send_heartbeat(State),
-  State#state{responses=dict:new(), leader=Id, timer=NewTimer}.
+assert_leadership(#state{self=Id, members=Members} = State) ->
+  %% notify as new leader
+  [ new_elected_leader(N, Id) || N <- filter([Id], Members) ],
+  NewState = send_heartbeat(State),
+  NewState#state{responses=dict:new(), leader=Id}.
 
 send_heartbeat(#state{self=Id, members=Members, current_term=CurrentTerm, timer=Timer} = State) ->
-  gen_fsm:cancel_timer(Timer),
   case Members of
-    [] ->
-      ok;
+    [] -> 
+      NewTimer = gen_fsm:send_event_after(heartbeat_timeout(), timeout_heartbeat),
+      State#state{timer=NewTimer};
     _ ->
+      gen_fsm:cancel_timer(Timer),
       ?INFO("~p :L: Sending heartbeat to members ~p", [Id, Members]),
       ?DEBUG("~p #state{}: ~p", [Id, State]),
 
@@ -314,15 +326,33 @@ send_heartbeat(#state{self=Id, members=Members, current_term=CurrentTerm, timer=
                entries=[],
                commit_index=CommitIndex},
       ?INFO("~p :L: #append_entries{}: ~p, members=~p", [Id, Msg, filter([Id], Members)]),
-      [ konsensus_rpc:send(fsm_name(N), Msg) || N <- filter([Id], Members) ]
-  end,
-  gen_fsm:send_event_after(heartbeat_timeout(), timeout_heartbeat).
+      %%
+      %% We can't use this, as the client may come and go.
+      %% Filter the disconnected ones out as we send the heartbeat.
+      %%
+      [ konsensus_rpc:send(fsm_name(N), Msg) || N <- filter([Id], Members) ],
+      %% NewState = send_and_filter(Msg, filter([Id], Members), State),
+      NTimer = gen_fsm:send_event_after(heartbeat_timeout(), timeout_heartbeat),
+      State#state{timer=NTimer}
+  end.
 
 %% ============================================================================
 %%  Private functions
 %%
 %% uuid() ->
 %%   list_to_binary(uuid:uuid_to_string(uuid:get_v4())).
+%%
+
+%% send_and_filter(Msg, [H|T], #state{members=Members} = State) ->
+%%   try
+%%     konsensus_rpc:send(fsm_name(H), Msg) 
+%%   catch
+%%     _:Error ->
+%%       ?ERROR("Can't send heartbeat to client ~p: ~p", [H, Error]),
+%%       Updated = Members -- [H],
+%%       send_and_filter(Msg, T, State#state{members=Updated})
+%%   end;
+%% send_and_filter(_Msg, [], State) -> State.
 
 filter(Ignores, Members) ->
   Members -- Ignores.

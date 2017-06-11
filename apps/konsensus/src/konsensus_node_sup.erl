@@ -29,7 +29,7 @@ init([Proc, Name, Members]) ->
          permanent, 5000, worker, [konsensus_fsm]},
 
 	Procs = [Log, FSM],
-  ?INFO("Starting processes [~p]", [Procs]),
+  ?DEBUG("Starting processes [~p]", [Procs]),
 	{ok, {{one_for_all, 1, 5}, Procs}}.
 
 -spec proc_name(Name :: atom(), Extra :: binary()) -> atom().
