@@ -14,7 +14,9 @@
 -export([get_leader/1]).
 -export([join/2]).
 -export([active_members/2]).
+-export([inactive_member/2]).
 -export([new_elected_leader/2]).
+-export([uuid/0]).
 
 %% gen_fsm.
 -export([init/1]).
@@ -74,6 +76,9 @@ join(Leader, Node) ->
 active_members(Node, ActiveMembers) ->
   gen_fsm:send_event(fsm_name(Node), {members, ActiveMembers}).
 
+inactive_member(Node, Member) ->
+  gen_fsm:send_event(fsm_name(Node), {inactive, Member}).
+
 new_elected_leader(Node, Leader) ->
   gen_fsm:send_event(fsm_name(Node), {leader, Leader}).
 
@@ -81,6 +86,7 @@ new_elected_leader(Node, Leader) ->
 %% gen_fsm.
 %%
 init(Name) ->
+  process_flag(trap_exit, true),
   [Id, Members] = Name,
   Timer = start_timer(),
   ?INFO("~p :: timer = ~p", [Id, Timer]),
@@ -89,9 +95,10 @@ init(Name) ->
   %% Get the leader, and notify join
   case Members of 
     [] -> 
-      NewState = #state{timer=Timer, self=Id, current_term=0, leader=undefined, members=Members}, 
+      State = #state{timer=Timer, self=Id, current_term=0, leader=undefined, members=Members}, 
+      NewState = assert_leadership(State),
       ?INFO("~p : initial state ~p", [Id, NewState]), 
-      {ok, follower, NewState};
+      {ok, leader, NewState};
     [H|_]  -> 
       %% pick one 
       Leader = get_leader(H), 
@@ -146,7 +153,6 @@ follower(timeout, #state{self=Id, members=Members} = State) ->
   case Members of
     [] ->
       NewState = assert_leadership(State),
-      ?INFO("~p :F: $$ becoming a leader", [Id]),
       {next_state, leader, NewState};
     _ ->
       NewState = start_election(State),
@@ -156,7 +162,7 @@ follower(timeout, #state{self=Id, members=Members} = State) ->
 
 follower(#append_entries{leader_id=Leader, entries=[]},
          #state{self=Id, timer=Timer, members=Members} = State) ->
-  ?INFO("~p :F: received heartbeat from ~p, timer=~p, members=~p", [Id, Leader, Timer, Members]),
+  ?DEBUG("~p :F: received heartbeat from ~p, members=~p", [Id, Leader, Members]),
   gen_fsm:cancel_timer(Timer),
   NewTimer = start_timer(),
   NewState = State#state{leader=Leader, timer=NewTimer},
@@ -214,6 +220,11 @@ candidate(Event, #state{self=Id} = State) ->
 leader(timeout_heartbeat, State) ->
   NewState = send_heartbeat(State),
   {next_state, leader, NewState};
+
+leader({inactive, NodeId}, #state{members=Members} = State) ->
+  %% remove _fsm from NodeId
+  Updated = Members -- [node_name(NodeId)],
+  {next_state, leader, State#state{members=Updated}};
 
 leader(Event, #state{self=Id} = State) ->
   unexpected(Event, leader, Id),
@@ -288,6 +299,10 @@ fsm_name(Id) ->
   N = atom_to_binary(Id, utf8),
   binary_to_atom(<<N/binary, "_fsm">>, utf8).
 
+node_name(NodeId) ->
+  Node = atom_to_binary(NodeId, utf8),
+  binary_to_atom(binary_part(Node, {0, byte_size(Node) - 4}), utf8).
+
 start_timer() ->
   gen_fsm:send_event_after(election_timeout(), timeout).
 
@@ -299,6 +314,7 @@ heartbeat_timeout() ->
 
 assert_leadership(#state{self=Id, members=Members} = State) ->
   %% notify as new leader
+  ?INFO("~p :F: $$ becoming a leader", [Id]),
   [ new_elected_leader(N, Id) || N <- filter([Id], Members) ],
   NewState = send_heartbeat(State),
   NewState#state{responses=dict:new(), leader=Id}.
@@ -306,11 +322,12 @@ assert_leadership(#state{self=Id, members=Members} = State) ->
 send_heartbeat(#state{self=Id, members=Members, current_term=CurrentTerm, timer=Timer} = State) ->
   case Members of
     [] -> 
+      gen_fsm:cancel_timer(Timer),
       NewTimer = gen_fsm:send_event_after(heartbeat_timeout(), timeout_heartbeat),
       State#state{timer=NewTimer};
     _ ->
       gen_fsm:cancel_timer(Timer),
-      ?INFO("~p :L: Sending heartbeat to members ~p", [Id, Members]),
+      ?DEBUG("~p :L: Sending heartbeat to members ~p", [Id, Members]),
       ?DEBUG("~p #state{}: ~p", [Id, State]),
 
       %% get the log entries
@@ -325,13 +342,13 @@ send_heartbeat(#state{self=Id, members=Members, current_term=CurrentTerm, timer=
                prev_log_term=LastLogTerm,
                entries=[],
                commit_index=CommitIndex},
-      ?INFO("~p :L: #append_entries{}: ~p, members=~p", [Id, Msg, filter([Id], Members)]),
+      ?DEBUG("~p :L: #append_entries{}: ~p, members=~p", [Id, Msg, filter([Id], Members)]),
       %%
       %% We can't use this, as the client may come and go.
       %% Filter the disconnected ones out as we send the heartbeat.
       %%
-      [ konsensus_rpc:send(fsm_name(N), Msg) || N <- filter([Id], Members) ],
-      %% NewState = send_and_filter(Msg, filter([Id], Members), State),
+      [ konsensus_rpc2:send(fsm_name(N), Msg) || N <- filter([Id], Members) ],
+      %%NewState = send_and_filter(Msg, filter([Id], Members), State),
       NTimer = gen_fsm:send_event_after(heartbeat_timeout(), timeout_heartbeat),
       State#state{timer=NTimer}
   end.
@@ -339,13 +356,16 @@ send_heartbeat(#state{self=Id, members=Members, current_term=CurrentTerm, timer=
 %% ============================================================================
 %%  Private functions
 %%
-%% uuid() ->
-%%   list_to_binary(uuid:uuid_to_string(uuid:get_v4())).
-%%
+uuid() ->
+  list_to_atom(uuid:uuid_to_string(uuid:get_v4())).
+
 
 %% send_and_filter(Msg, [H|T], #state{members=Members} = State) ->
 %%   try
-%%     konsensus_rpc:send(fsm_name(H), Msg) 
+%%     Pid = konsensus_rpc:send(fsm_name(H), Msg),
+%%     register(send_fsm, Pid),
+%%     ?INFO(" --> Sending heartbeat to ~p", [H]),
+%%     send_and_filter(Msg, T, State)
 %%   catch
 %%     _:Error ->
 %%       ?ERROR("Can't send heartbeat to client ~p: ~p", [H, Error]),

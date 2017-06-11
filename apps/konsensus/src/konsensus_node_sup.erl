@@ -15,7 +15,7 @@ start_link(Proc, SupName, Name, Members) ->
 	supervisor:start_link({local, SupName}, ?MODULE, [Proc, Name, Members]).
 
 init([Proc, Name, Members]) ->
-  ?INFO("Starting node_sup for [~p, ~p, ~p]", [Proc, Name, Members]),
+  ?DEBUG("Starting node_sup for [~p, ~p, ~p]", [Proc, Name, Members]),
   %% the storage log
   LogName = proc_name(Proc, <<"_log">>),
   Log = {LogName, 

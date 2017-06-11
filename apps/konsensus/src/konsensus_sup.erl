@@ -20,8 +20,9 @@ init([]) ->
   %% Konsensus = ?CHILD(konsensus_fsm, worker),
   %% Log = ?CHILD(konsensus_log, worker, 
   %% Dog = ?CHILD(dog_fsm, worker),
+  RPC = ?CHILD(konsensus_rpc2, worker),
 
-  Procs = [],
+  Procs = [RPC],
   {ok, {{one_for_one, 5, 10}, Procs}}.
 
 -spec start_node(Name :: atom(), Members :: list()) -> {ok | term()}.

@@ -2,8 +2,9 @@
 konsensus_sup:start_node(foo, []).
 
 konsensus_sup:start_node(bar, [foo]).
-konsensus_sup:start_node(baz, [bar, foo]).
-konsensus_sup:start_node(bat, [baz, bar, foo]).
+konsensus_sup:start_node(baz, [foo]).
+konsensus_sup:start_node(bat, [foo]).
+konsensus_sup:start_node(qux, [foo]).
 
 konsensus_sup:start_node(foo, [baz, bar, bat]).
 
