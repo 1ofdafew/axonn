@@ -226,6 +226,12 @@ leader({inactive, NodeId}, #state{members=Members} = State) ->
   Updated = Members -- [node_name(NodeId)],
   {next_state, leader, State#state{members=Updated}};
 
+leader(#vote{id=From, term=Term, vote_granted=VoteGranted}, 
+          #state{responses=Responses, self=Self} = State) ->
+  ?INFO("~p :C: received vote from ~p, term = ~p", [Self, From, Term]),
+  R = dict:store(From, VoteGranted, Responses),
+  {next_state, leader, State#state{responses=R}};
+
 leader(Event, #state{self=Id} = State) ->
   unexpected(Event, leader, Id),
   {next_state, leader, State}.
@@ -287,13 +293,19 @@ request_votes(#state{current_term=Term, self=Id, members=Members}, ExLeader) ->
                           last_log_term=LastLogTerm},
   ?INFO("~p :F: previous leader ~p is 'dead'", [Id, ExLeader]),
   ?INFO("~p :F: #request_vote{}: ~p from members: ~p", [Id, VoteMsg, Members -- [ExLeader]]),
-  [ konsensus_rpc:send(fsm_name(N), VoteMsg) || N <- filter([Id, ExLeader], Members) ].
+  [ konsensus_rpc2:send(fsm_name(N), VoteMsg) || N <- filter([Id, ExLeader], Members) ].
 
 election_won(Responses, Members, Self) ->
+  %% if only 2 node available, make the first reecived as the leader
   Count = dict:size(dict:filter(fun(_, V) -> V end, Responses)),
   Votes = (length(Members) div 2 + 1),
   ?INFO("~p :C: checking if we won: count=~p, votes=~p", [Self, Count, Votes]),
-  Count > Votes.
+  case length(Members) of
+    2 -> 
+      true;
+    _ ->
+      Count > Votes
+  end.
 
 fsm_name(Id) ->
   N = atom_to_binary(Id, utf8),

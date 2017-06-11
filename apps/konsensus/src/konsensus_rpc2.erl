@@ -40,7 +40,7 @@ handle_call(_Request, _From, State) ->
 	{reply, ignored, State}.
 
 handle_cast({send, NodeId, #request_vote{candidate_id=Candidate}=Msg}, State) ->
-  ?INFO("~p :: sending heartbeat to ~p", [?MODULE, NodeId]),
+  ?INFO("~p :: sending vote req to ~p", [?MODULE, NodeId]),
   case konsensus_fsm:send_sync(NodeId, Msg) of
     Reply when is_record(Reply, vote) ->
       ?INFO("RPC :: Received vote reply: ~p, recipient: ~p", [Reply, Candidate]),
