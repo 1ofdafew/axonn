@@ -1,0 +1,12 @@
+
+konsensus_sup:start_node(foo, []).
+
+konsensus_sup:start_node(bar, [foo]).
+konsensus_sup:start_node(baz, [bar, foo]).
+konsensus_sup:start_node(bat, [baz, bar, foo]).
+
+konsensus_sup:start_node(foo, [baz, bar, bat]).
+
+konsensus_sup:stop_node(foo).
+konsensus_sup:stop_node(bar).
+konsensus_sup:stop_node(bat).
